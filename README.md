@@ -2,6 +2,8 @@
 
 Remap keys and back up bindings on a ZMK keyboard. This edition also includes an LED matrix editor for keyboards running compatible firmware. To explore both editors without connecting hardware, choose **Try a demo keyboard** on the welcome screen.
 
+![The demo keyboard on the Base layer with Q selected and the Basic keys palette open.](docs/screenshots/key-actions.png)
+
 ## Download and install
 
 The desktop app version is **0.4.0**. Look for **v0.4.0-afayge.1** on the [Releases page](https://github.com/afayge/zmk-studio/releases). When the release is published, open **Assets** and choose the file for your system.
@@ -27,6 +29,8 @@ The macOS app uses an ad hoc signature and has no Apple notarization. The Window
 | Remap an encoder's clockwise or counterclockwise action | Firmware that reports the encoder and supports editing its directional bindings. |
 
 On a supported keyboard, open **Lighting**, select the side and LED group, adjust its settings, and click **Apply** in that group. You can also try this sequence with the demo keyboard.
+
+![Lighting controls on the demo keyboard with the Swirl preset selected and its colors visible on the split layout.](docs/screenshots/lighting.png)
 
 ## Remap your first key
 
