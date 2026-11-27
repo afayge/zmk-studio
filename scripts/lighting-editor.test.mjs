@@ -134,6 +134,28 @@ function sample(effect, time, key = 0, presses = new Map()) {
   return sampleLight(effect, grid, key, time, presses);
 }
 
+test("demo keys on both halves have independent LEDs in Palette and Swirl", async () => {
+  const allPositions = [];
+  for (const [side, client] of keyboard().entries()) {
+    const { topology } = await client.directory();
+    const expected = Array.from({ length: 36 }, (_, i) => i).filter((i) =>
+      (i >= 30 ? i - 30 >= 3 : i % 10 >= 5) === Boolean(side),
+    );
+    const mapped = topology.leds.filter((led) => led.position !== 65535);
+    assert.deepEqual(mapped.map((led) => led.position).sort((a, b) => a - b), expected);
+    assert.equal(topology.leds.length - mapped.length, side ? 2 : 3);
+    allPositions.push(...mapped.map((led) => led.position));
+    for (const preset of [0, 3]) {
+      const group = await client.group((Kind.Main << 16) | preset);
+      const preview = makePreview(catalog, { ...state, profile: preset }, group, topology);
+      for (const pos of expected) {
+        assert.ok(preview.positions.get(pos).index >= 0);
+      }
+    }
+  }
+  assert.equal(new Set(allPositions).size, 36);
+});
+
 test("solid, breathe, spectrum and swirl respect color, brightness, period and speed", () => {
   const solid = effect(0, {
     [Field.Primary]: [0x00ff00],
@@ -573,7 +595,8 @@ test("physical effects use side-local cells, persistent style and bounded input"
     topology,
   );
   assert.equal(sample(local, 250, 0).h, 90);
-  assert.equal(sample(local, 250, 10).h, 346);
+  // The second row is one third of the way down the four-row grid.
+  assert.equal(sample(local, 250, 10).h, 175);
   const presses = new Map();
   presses.input = { hits: [], heat: new Map() };
   const heat = { ...local, renderer: "heatmap", style: 0 };

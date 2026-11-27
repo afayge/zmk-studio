@@ -1,6 +1,6 @@
 # ZMK Studio (afayge edition)
 
-Remap keys and back up bindings on a ZMK keyboard. This edition also includes an LED matrix editor for keyboards running compatible firmware. To explore both editors without connecting hardware, choose **Try a demo keyboard** on the welcome screen.
+Remap keys and back up bindings on a ZMK keyboard. This edition also includes an LED matrix editor for keyboards running compatible firmware. Choose **Try a demo keyboard** on the welcome screen to explore both editors. The demo has one LED under each of its 36 keys in both the Split and Compact layouts, plus separate side LEDs.
 
 ![The demo keyboard on the Base layer with Q selected and the Basic keys palette open.](docs/screenshots/key-actions.png)
 

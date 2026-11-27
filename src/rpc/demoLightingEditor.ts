@@ -21,6 +21,13 @@ import {
 } from "./lightingEditor";
 
 function demoSide(right: boolean, catalog: Catalog, state: State) {
+  // Keep the original LED IDs used by zones and indicators. Extra LEDs have
+  // no key position; the remaining IDs cover the rest of each keyboard half.
+  const positions = right
+    ? [5, 7, 6, 15, unassigned, unassigned,
+       8, 9, 16, 17, 18, 19, 25, 26, 27, 28, 29, 33, 34, 35]
+    : [0, 2, 1, 10, unassigned, unassigned, unassigned,
+       3, 4, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 31, 32];
   const directory: Directory = {
     board: right ? "Demo right" : "Demo left",
     sources: right ? 5 : 15,
@@ -29,16 +36,16 @@ function demoSide(right: boolean, catalog: Catalog, state: State) {
     topology: {
       firstCustom: 1,
       capacity: 4,
-      grid: { rows: right ? 0 : 2, cols: right ? 0 : 3, defaultSpeed: 4 },
-      leds: (right
-        ? [5, 7, 6, 15, unassigned, unassigned]
-        : [0, 2, 1, 10, unassigned, unassigned, unassigned]
-      ).map((position, led) => ({
-        position,
-        owner: unassigned,
-        row: right || led >= 4 ? unassigned : led === 3 ? 1 : 0,
-        col: right || led >= 4 ? unassigned : [0, 2, 1, 0][led],
-      })),
+      grid: { rows: right ? 0 : 4, cols: right ? 0 : 5, defaultSpeed: 4 },
+      leds: positions.map((position) => {
+        const hasCell = !right && position !== unassigned;
+        return {
+          position,
+          owner: unassigned,
+          row: hasCell ? Math.floor(position / 10) : unassigned,
+          col: hasCell ? (position % 10) + (position >= 30 ? 2 : 0) : unassigned,
+        };
+      }),
     },
   };
   const groups = new Map<number, Group>();
