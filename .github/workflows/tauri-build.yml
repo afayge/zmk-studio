@@ -3,6 +3,7 @@ name: Desktop packages
 on:
   workflow_dispatch:
   push:
+    branches: ['release/v*-afayge.*']
     tags: ['v*-afayge.*']
 
 permissions:
@@ -60,8 +61,8 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  draft:
-    if: startsWith(github.ref, 'refs/tags/')
+  publish:
+    if: github.event_name == 'push'
     needs: package
     runs-on: ubuntu-24.04
     permissions:
@@ -77,9 +78,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
           set -eu
+          TAG=${RELEASE_REF#release/}
+          test -f "../.github/release-notes/$TAG.md"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
           test "$(find . -maxdepth 1 -name 'ZMK-Studio-*' -type f | wc -l)" -eq 6
           sha256sum ZMK-Studio-* > SHA256SUMS.txt
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -92,3 +102,4 @@ jobs:
           cd "$RUNNER_TEMP/verify-assets"
           cmp SHA256SUMS.txt "$GITHUB_WORKSPACE/release-assets/SHA256SUMS.txt"
           sha256sum --strict -c SHA256SUMS.txt
+          gh release edit "$TAG" --draft=false --latest
