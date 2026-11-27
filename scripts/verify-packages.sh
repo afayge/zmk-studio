@@ -23,7 +23,8 @@ case "$PLATFORM" in
     hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
     trap 'hdiutil detach "$mount"; rmdir "$mount"' EXIT
     app="$mount/ZMK Studio.app"
-    lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/zmk-studio"
+    archs=$(lipo -archs "$app/Contents/MacOS/zmk-studio")
+    [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]]
     test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
     codesign --verify --deep --strict "$app"
     cp "$dmg" "$prefix.dmg"
