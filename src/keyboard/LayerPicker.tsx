@@ -121,6 +121,7 @@ export const LayerPicker = ({
   const layer_items = useMemo(() => {
     return layers.map((l, i) => ({
       name: l.name || i.toLocaleString(),
+      label: l.name || "Layer",
       id: l.id,
       index: i,
       selected: i === selectedLayerIndex,
@@ -215,10 +216,15 @@ export const LayerPicker = ({
       >
         {(layer_item) => (
           <ListBoxItem
-            textValue={layer_item.name}
+            textValue={`${layer_item.label} ${layer_item.index}`}
             className="p-1 b-1 my-1 group grid grid-cols-[1fr_auto] items-center aria-selected:bg-primary aria-selected:text-primary-content border rounded border-transparent border-solid hover:bg-base-300"
           >
-            <span>{layer_item.name}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate">{layer_item.label}</span>
+              <span className="inline-flex h-[1.125rem] min-w-[1.125rem] shrink-0 items-center justify-center rounded-[4px] border border-b-2 border-solid border-current px-1 font-[ui-monospace,monospace] text-[11px] font-semibold leading-none tabular-nums">
+                {layer_item.index}
+              </span>
+            </span>
             <Pencil
               className="h-4 w-4 mx-1 invisible group-hover:visible"
               onClick={() =>

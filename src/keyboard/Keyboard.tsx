@@ -1,188 +1,83 @@
-import React, {
-  SetStateAction,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { ActionIcon } from "../behaviors/ActionIcon";
+import { describe } from "../behaviors/actions";
+import { BindingGlyph } from "../behaviors/BindingGlyph";
+import { bindingGlyph } from "../behaviors/actionGlyph";
+import type { EncoderDirection } from "../rpc/generated/keymap";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
-import { Request } from "@zmkfirmware/zmk-studio-ts-client";
 import { call_rpc } from "../rpc/logging";
 import {
-  PhysicalLayout,
   Keymap,
-  SetLayerBindingResponse,
   SetLayerPropsResponse,
   BehaviorBinding,
   Layer,
 } from "@zmkfirmware/zmk-studio-ts-client/keymap";
-import type { GetBehaviorDetailsResponse } from "@zmkfirmware/zmk-studio-ts-client/behaviors";
 
 import { LayerPicker } from "./LayerPicker";
 import { PhysicalLayoutPicker } from "./PhysicalLayoutPicker";
 import { Keymap as KeymapComp } from "./Keymap";
-import { useConnectedDeviceData } from "../rpc/useConnectedDeviceData";
+import { ExtraLedRail, type ExtraLedEdit } from "./ExtraLedRail";
+import { WorkbenchDivider } from "./WorkbenchDivider";
+import { useKeyboardData } from "../rpc/useKeyboardData";
 import { ConnectionContext } from "../rpc/ConnectionContext";
 import { UndoRedoContext } from "../undoRedo";
 import { BehaviorBindingPicker } from "../behaviors/BehaviorBindingPicker";
+import { LedCanvas } from "./LedPositionPicker";
+import { LightingPanel } from "./LightingPanel";
+import { useMatrixLighting } from "../rpc/useMatrixLighting";
+import { LightingSupport } from "../rpc/generated/core";
+import { BackupPanel } from "./BackupPanel";
+import { OutputTest } from "./OutputTest";
+import { BindingChange, layoutSignature } from "./snapshot";
+import {
+  BindingWriteError,
+  clearInterrupted,
+  getInterrupted,
+  positionState,
+  writeChanges,
+} from "./bindingWrites";
+import { sameBinding } from "../behaviors/actions";
 import { produce } from "immer";
-import { LockStateContext } from "../rpc/LockStateContext";
-import { LockState } from "@zmkfirmware/zmk-studio-ts-client/core";
 import { deserializeLayoutZoom, LayoutZoom } from "./PhysicalLayout";
 import { useLocalStorageState } from "../misc/useLocalStorageState";
 
-type BehaviorMap = Record<number, GetBehaviorDetailsResponse>;
-
-function useBehaviors(): BehaviorMap {
-  let connection = useContext(ConnectionContext);
-  let lockState = useContext(LockStateContext);
-
-  const [behaviors, setBehaviors] = useState<BehaviorMap>({});
-
-  useEffect(() => {
-    if (
-      !connection.conn ||
-      lockState != LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED
-    ) {
-      setBehaviors({});
-      return;
-    }
-
-    async function startRequest() {
-      setBehaviors({});
-
-      if (!connection.conn) {
-        return;
-      }
-
-      let get_behaviors: Request = {
-        behaviors: { listAllBehaviors: true },
-        requestId: 0,
-      };
-
-      let behavior_list = await call_rpc(connection.conn, get_behaviors);
-      if (!ignore) {
-        let behavior_map: BehaviorMap = {};
-        for (let behaviorId of behavior_list.behaviors?.listAllBehaviors
-          ?.behaviors || []) {
-          if (ignore) {
-            break;
-          }
-          let details_req = {
-            behaviors: { getBehaviorDetails: { behaviorId } },
-            requestId: 0,
-          };
-          let behavior_details = await call_rpc(connection.conn, details_req);
-          let dets: GetBehaviorDetailsResponse | undefined =
-            behavior_details?.behaviors?.getBehaviorDetails;
-
-          if (dets) {
-            behavior_map[dets.id] = dets;
-          }
-        }
-
-        if (!ignore) {
-          setBehaviors(behavior_map);
-        }
-      }
-    }
-
-    let ignore = false;
-    startRequest();
-
-    return () => {
-      ignore = true;
-    };
-  }, [connection, lockState]);
-
-  return behaviors;
-}
-
-function useLayouts(): [
-  PhysicalLayout[] | undefined,
-  React.Dispatch<SetStateAction<PhysicalLayout[] | undefined>>,
-  number,
-  React.Dispatch<SetStateAction<number>>
-] {
-  let connection = useContext(ConnectionContext);
-  let lockState = useContext(LockStateContext);
-
-  const [layouts, setLayouts] = useState<PhysicalLayout[] | undefined>(
-    undefined
-  );
-  const [selectedPhysicalLayoutIndex, setSelectedPhysicalLayoutIndex] =
-    useState<number>(0);
-
-  useEffect(() => {
-    if (
-      !connection.conn ||
-      lockState != LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED
-    ) {
-      setLayouts(undefined);
-      return;
-    }
-
-    async function startRequest() {
-      setLayouts(undefined);
-
-      if (!connection.conn) {
-        return;
-      }
-
-      let response = await call_rpc(connection.conn, {
-        keymap: { getPhysicalLayouts: true },
-      });
-
-      if (!ignore) {
-        setLayouts(response?.keymap?.getPhysicalLayouts?.layouts);
-        setSelectedPhysicalLayoutIndex(
-          response?.keymap?.getPhysicalLayouts?.activeLayoutIndex || 0
-        );
-      }
-    }
-
-    let ignore = false;
-    startRequest();
-
-    return () => {
-      ignore = true;
-    };
-  }, [connection, lockState]);
-
-  return [
+export default function Keyboard({
+  device,
+  lightingSupport,
+  savedRevision,
+  failure,
+}: {
+  device?: string;
+  lightingSupport: LightingSupport;
+  savedRevision: number;
+  failure?: { cause: unknown; retry: () => void };
+}) {
+  const {
+    keymap,
+    setKeymap,
     layouts,
-    setLayouts,
     selectedPhysicalLayoutIndex,
     setSelectedPhysicalLayoutIndex,
-  ];
-}
+    behaviors,
+    error,
+    retry,
+  } = useKeyboardData();
 
-export default function Keyboard() {
-  const [
-    layouts,
-    _setLayouts,
-    selectedPhysicalLayoutIndex,
-    setSelectedPhysicalLayoutIndex,
-  ] = useLayouts();
-  const [keymap, setKeymap] = useConnectedDeviceData<Keymap>(
-    { keymap: { getKeymap: true } },
-    (keymap) => {
-      console.log("Got the keymap!");
-      return keymap?.keymap?.getKeymap;
+  const [extraEdit, setExtraEdit] = useState<ExtraLedEdit>();
+  const [sideToolbar, setSideToolbar] = useState<HTMLDivElement | null>(null);
+  const [canvas, setCanvas] = useState<HTMLDivElement | null>(null);
+  const [keymapScale, setKeymapScale] = useLocalStorageState<LayoutZoom>(
+    "keymapScale",
+    "auto",
+    {
+      deserialize: deserializeLayoutZoom,
     },
-    true
   );
-
-  const [keymapScale, setKeymapScale] = useLocalStorageState<LayoutZoom>("keymapScale", "auto", {
-    deserialize: deserializeLayoutZoom,
-  });
 
   const [selectedLayerIndex, setSelectedLayerIndex] = useState<number>(0);
   const [selectedKeyPosition, setSelectedKeyPosition] = useState<
     number | undefined
   >(undefined);
-  const behaviors = useBehaviors();
 
   const conn = useContext(ConnectionContext);
   const undoRedo = useContext(UndoRedoContext);
@@ -192,108 +87,212 @@ export default function Keyboard() {
     setSelectedKeyPosition(undefined);
   }, [conn]);
 
-  useEffect(() => {
-    async function performSetRequest() {
-      if (!conn.conn || !layouts) {
-        return;
-      }
-
-      let resp = await call_rpc(conn.conn, {
-        keymap: { setActivePhysicalLayout: selectedPhysicalLayoutIndex },
+  const [tool, setTool] = useState<
+    "edit" | "lighting" | "backup" | "batch" | "test"
+  >("edit");
+  const lighting = useMatrixLighting(
+    lightingSupport,
+    selectedPhysicalLayoutIndex,
+    keymap?.layers[selectedLayerIndex]?.id,
+    layouts?.[selectedPhysicalLayoutIndex]?.keys.length,
+  );
+  const { catalog } = lighting;
+  const [targets, setTargets] = useState<number[]>([]);
+  const [batchMode, setBatchMode] = useState("copy");
+  const [originals, setOriginals] = useState<Record<string, BehaviorBinding>>(
+    {},
+  );
+  const [, refreshJournal] = useState(0);
+  const layout = layouts?.[selectedPhysicalLayoutIndex];
+  const journalKey =
+    device && layout
+      ? JSON.stringify([device, layoutSignature(layout)])
+      : undefined;
+  const pending = journalKey ? getInterrupted(journalKey) : undefined;
+  const layer = keymap?.layers[selectedLayerIndex];
+  const [rotation, setRotation] = useState<{
+    layerId: number;
+    sensor: number;
+    side: "clockwise" | "counterclockwise";
+  }>();
+  const direction =
+    rotation && layer?.id === rotation.layerId
+      ? layer.encoderMap?.encoders[rotation.sensor]?.[rotation.side]
+      : undefined;
+  const inherited: BehaviorBinding = { behaviorId: -1, param1: 0, param2: 0 };
+  function changeEncoder(binding?: BehaviorBinding) {
+    const connection = conn.conn;
+    if (!connection || !rotation || !direction) return;
+    const { layerId, sensor, side } = rotation;
+    async function write(value?: BehaviorBinding) {
+      const response = await call_rpc(connection!, {
+        keymap: {
+          setEncoderBinding: {
+            layerId,
+            sensorIndex: sensor,
+            counterclockwise: side === "counterclockwise",
+            ...(value ? { binding: value } : { restore: true }),
+          },
+        },
       });
-
-      let new_keymap = resp?.keymap?.setActivePhysicalLayout?.ok;
-      if (new_keymap) {
-        setKeymap(new_keymap);
-      } else {
-        console.error(
-          "Failed to set the active physical layout err:",
-          resp?.keymap?.setActivePhysicalLayout?.err
+      if (response.keymap?.setEncoderBinding !== 0)
+        throw Error("The keyboard rejected this encoder binding.");
+      const map = (await call_rpc(connection!, { keymap: { getKeymap: true } }))
+        .keymap?.getKeymap;
+      const actual = map?.layers.find((l) => l.id === layerId)?.encoderMap
+        ?.encoders[sensor]?.[side];
+      if (!map || !actual)
+        throw Error(
+          "Could not read the encoder binding back from the keyboard.",
         );
-      }
+      setKeymap(map);
+      if (
+        value
+          ? !actual.overridden ||
+            !actual.binding ||
+            !sameBinding(actual.binding, value)
+          : actual.overridden
+      )
+        throw Error("Encoder binding differs from the requested change.");
     }
-
-    performSetRequest();
-  }, [selectedPhysicalLayoutIndex]);
-
-  let doSelectPhysicalLayout = useCallback(
-    (i: number) => {
-      let oldLayout = selectedPhysicalLayoutIndex;
-      undoRedo?.(async () => {
-        setSelectedPhysicalLayoutIndex(i);
-
-        return async () => {
-          setSelectedPhysicalLayoutIndex(oldLayout);
-        };
-      });
-    },
-    [undoRedo, selectedPhysicalLayoutIndex]
+    const previous = direction.overridden ? direction.binding : undefined;
+    void undoRedo?.(async () => {
+      await write(binding);
+      return () => write(previous);
+    });
+  }
+  const behaviorList = useMemo(() => Object.values(behaviors), [behaviors]);
+  const layerOptions = useMemo(
+    () =>
+      keymap?.layers.map(({ id, name }, i) => ({
+        id,
+        name: name || String(i),
+      })) || [],
+    [keymap],
   );
-
-  let doUpdateBinding = useCallback(
-    (binding: BehaviorBinding) => {
-      if (!keymap || selectedKeyPosition === undefined) {
-        console.error(
-          "Can't update binding without a selected key position and loaded keymap"
-        );
-        return;
-      }
-
-      const layer = selectedLayerIndex;
-      const layerId = keymap.layers[layer].id;
-      const keyPosition = selectedKeyPosition;
-      const oldBinding = keymap.layers[layer].bindings[keyPosition];
-      undoRedo?.(async () => {
-        if (!conn.conn) {
-          throw new Error("Not connected");
+  function encoderButton(
+    sensor: number,
+    side: "clockwise" | "counterclockwise",
+    entry: EncoderDirection | undefined,
+  ) {
+    const b = entry?.binding,
+      behavior = b && behaviors[b.behaviorId];
+    const glyph = b && bindingGlyph(b, behavior);
+    const title = side === "clockwise" ? "Clockwise" : "Counterclockwise";
+    const summary = b
+      ? describe(b, behavior, layerOptions, catalog)
+      : entry
+        ? "Inherit"
+        : "Unavailable";
+    return (
+      <button
+        type="button"
+        disabled={!entry}
+        aria-label={`Encoder ${sensor + 1} · ${title} · ${summary}`}
+        title={summary}
+        aria-pressed={
+          !!rotation &&
+          rotation.layerId === layer?.id &&
+          rotation.sensor === sensor &&
+          rotation.side === side
         }
+        onClick={() => {
+          setSelectedKeyPosition(undefined);
+          setRotation({ layerId: layer!.id, sensor, side });
+        }}
+      >
+        <ActionIcon name={side} />
+        {glyph && <BindingGlyph glyph={glyph} />}
+        <span className="encoder-direction-label">
+          <span>{title}</span>
+          <small>{summary}</small>
+        </span>
+      </button>
+    );
+  }
+  const transparent = behaviorList.find((b) => b.displayName === "Transparent");
+  useEffect(() => {
+    setOriginals({});
+  }, [savedRevision]);
+  useEffect(() => {
+    setTargets([]);
+    setRotation(undefined);
+  }, [selectedLayerIndex, selectedPhysicalLayoutIndex, tool]);
 
-        let resp = await call_rpc(conn.conn, {
-          keymap: { setLayerBinding: { layerId, keyPosition, binding } },
-        });
+  function doSelectPhysicalLayout(index: number) {
+    const previous = selectedPhysicalLayoutIndex;
+    const connection = conn.conn;
+    if (index === previous || !connection) return;
+    async function select(i: number) {
+      const result = (
+        await call_rpc(connection!, { keymap: { setActivePhysicalLayout: i } })
+      ).keymap?.setActivePhysicalLayout;
+      if (!result?.ok) throw Error("Could not switch the physical layout.");
+      setSelectedPhysicalLayoutIndex(i);
+      setSelectedKeyPosition(undefined);
+      setKeymap(result.ok);
+    }
+    void undoRedo?.(async () => {
+      await select(index);
+      return () => select(previous);
+    });
+  }
 
-        if (
-          resp.keymap?.setLayerBinding ===
-          SetLayerBindingResponse.SET_LAYER_BINDING_RESP_OK
-        ) {
-          setKeymap(
-            produce((draft: any) => {
-              draft.layers[layer].bindings[keyPosition] = binding;
-            })
+  function applyChanges(changes: BindingChange[]) {
+    const connection = conn.conn;
+    if (!connection || !changes.length) return;
+    const apply = (items: BindingChange[]) =>
+      writeChanges(
+        connection,
+        journalKey,
+        items,
+        (c, binding) => {
+          const id = [selectedPhysicalLayoutIndex, c.layerId, c.position].join(
+            "/",
           );
-        } else {
-          console.error("Failed to set binding", resp.keymap?.setLayerBinding);
-        }
+          setOriginals((previous) =>
+            previous[id] ? previous : { ...previous, [id]: c.before },
+          );
+          setKeymap(
+            produce((draft: Keymap | undefined) => {
+              const target = draft?.layers.find((l) => l.id === c.layerId);
+              if (target) target.bindings[c.position] = binding;
+            }),
+          );
+        },
+        setKeymap,
+      );
+    void undoRedo?.(async () => {
+      await apply(changes);
+      const inverse = changes.map((c) => ({
+        ...c,
+        before: c.after,
+        after: c.before,
+      }));
+      return () => apply(inverse);
+    });
+  }
 
-        return async () => {
-          if (!conn.conn) {
-            return;
-          }
+  function doUpdateBinding(binding: BehaviorBinding) {
+    if (!layer || selectedKeyPosition === undefined) return;
+    const before = layer.bindings[selectedKeyPosition];
+    if (!sameBinding(before, binding))
+      applyChanges([
+        {
+          layerId: layer.id,
+          position: selectedKeyPosition,
+          before,
+          after: binding,
+        },
+      ]);
+  }
 
-          let resp = await call_rpc(conn.conn, {
-            keymap: {
-              setLayerBinding: { layerId, keyPosition, binding: oldBinding },
-            },
-          });
-          if (
-            resp.keymap?.setLayerBinding ===
-            SetLayerBindingResponse.SET_LAYER_BINDING_RESP_OK
-          ) {
-            setKeymap(
-              produce((draft: any) => {
-                draft.layers[layer].bindings[keyPosition] = oldBinding;
-              })
-            );
-          } else {
-          }
-        };
-      });
-    },
-    [conn, keymap, undoRedo, selectedLayerIndex, selectedKeyPosition]
-  );
-
-  let selectedBinding = useMemo(() => {
-    if (keymap == null || selectedKeyPosition == null || !keymap.layers[selectedLayerIndex]) {
+  const selectedBinding = useMemo(() => {
+    if (
+      keymap == null ||
+      selectedKeyPosition == null ||
+      !keymap.layers[selectedLayerIndex]
+    ) {
       return null;
     }
 
@@ -315,7 +314,7 @@ export default function Keyboard() {
           setKeymap(resp.keymap?.moveLayer?.ok);
           setSelectedLayerIndex(destIndex);
         } else {
-          console.error("Error moving", resp);
+          throw Error("The keyboard could not move the layer.");
         }
       };
 
@@ -324,7 +323,7 @@ export default function Keyboard() {
         return () => doMove(end, start);
       });
     },
-    [undoRedo]
+    [undoRedo, conn, setKeymap],
   );
 
   const addLayer = useCallback(() => {
@@ -341,7 +340,7 @@ export default function Keyboard() {
           produce((draft: any) => {
             draft.layers.push(resp.keymap!.addLayer!.ok!.layer);
             draft.availableLayers--;
-          })
+          }),
         );
 
         setSelectedLayerIndex(newSelection);
@@ -368,12 +367,12 @@ export default function Keyboard() {
           produce((draft: any) => {
             draft.layers.splice(layerIndex, 1);
             draft.availableLayers++;
-          })
+          }),
         );
       } else {
         console.error("Remove error", resp.keymap?.removeLayer?.err);
         throw new Error(
-          "Failed to remove layer:" + resp.keymap?.removeLayer?.err
+          "Failed to remove layer:" + resp.keymap?.removeLayer?.err,
         );
       }
     }
@@ -402,12 +401,12 @@ export default function Keyboard() {
           produce((draft: any) => {
             draft.layers.splice(layerIndex, 1);
             draft.availableLayers++;
-          })
+          }),
         );
       } else {
         console.error("Remove error", resp.keymap?.removeLayer?.err);
         throw new Error(
-          "Failed to remove layer:" + resp.keymap?.removeLayer?.err
+          "Failed to remove layer:" + resp.keymap?.removeLayer?.err,
         );
       }
     }
@@ -427,13 +426,13 @@ export default function Keyboard() {
           produce((draft: any) => {
             draft.layers.splice(atIndex, 0, resp!.keymap!.restoreLayer!.ok);
             draft.availableLayers--;
-          })
+          }),
         );
         setSelectedLayerIndex(atIndex);
       } else {
         console.error("Remove error", resp.keymap?.restoreLayer?.err);
         throw new Error(
-          "Failed to restore layer:" + resp.keymap?.restoreLayer?.err
+          "Failed to restore layer:" + resp.keymap?.restoreLayer?.err,
         );
       }
     }
@@ -448,7 +447,7 @@ export default function Keyboard() {
       await doRemove(index);
       return () => doRestore(layerId, index);
     });
-  }, [conn, undoRedo, selectedLayerIndex]);
+  }, [conn, undoRedo, selectedLayerIndex, keymap]);
 
   const changeLayerName = useCallback(
     (id: number, oldName: string, newName: string) => {
@@ -468,14 +467,14 @@ export default function Keyboard() {
           setKeymap(
             produce((draft: any) => {
               const layer_index = draft.layers.findIndex(
-                (l: Layer) => l.id == layerId
+                (l: Layer) => l.id == layerId,
               );
               draft.layers[layer_index].name = name;
-            })
+            }),
           );
         } else {
           throw new Error(
-            "Failed to change layer name:" + resp.keymap?.setLayerProps
+            "Failed to change layer name:" + resp.keymap?.setLayerProps,
           );
         }
       }
@@ -487,7 +486,7 @@ export default function Keyboard() {
         };
       });
     },
-    [conn, undoRedo, keymap]
+    [conn, undoRedo, keymap],
   );
 
   useEffect(() => {
@@ -500,10 +499,25 @@ export default function Keyboard() {
     }
   }, [keymap, selectedLayerIndex]);
 
+  if (error)
+    return (
+      <div className="studio-error" role="alert">
+        {error}{" "}
+        <button className="studio-button" onClick={retry}>
+          Retry loading
+        </button>
+      </div>
+    );
+  if (!layout || !keymap)
+    return (
+      <p className="tool-panel" role="status">
+        Loading keyboard…
+      </p>
+    );
   return (
-    <div className="grid grid-cols-[auto_1fr] grid-rows-[1fr_minmax(10em,auto)] bg-base-300 max-w-full min-w-0 min-h-0">
-      <div className="p-2 flex flex-col gap-2 bg-base-200 row-span-2">
-        {layouts && (
+    <div className="keyboard-workbench bg-base-300">
+      <div className="p-2 flex flex-col gap-2 bg-base-200 keyboard-sidebar">
+        {layouts?.length ? (
           <div className="col-start-3 row-start-1 row-end-2">
             <PhysicalLayoutPicker
               layouts={layouts}
@@ -511,7 +525,7 @@ export default function Keyboard() {
               onPhysicalLayoutClicked={doSelectPhysicalLayout}
             />
           </div>
-        )}
+        ) : null}
 
         {keymap && (
           <div className="col-start-1 row-start-1 row-end-2">
@@ -528,48 +542,298 @@ export default function Keyboard() {
             />
           </div>
         )}
+        {tool === "edit" &&
+          layer?.encoderMap?.encoders.map((e, i) => (
+            <section
+              className="encoder-controls"
+              key={i}
+              aria-label={`Encoder ${i + 1}`}
+            >
+              <strong>Encoder {i + 1}</strong>
+              {encoderButton(i, "clockwise", e.clockwise)}
+              {encoderButton(i, "counterclockwise", e.counterclockwise)}
+            </section>
+          ))}
       </div>
-      {layouts && keymap && behaviors && (
-        <div className="p-2 col-start-2 row-start-1 grid items-center justify-center relative min-w-0">
-          <KeymapComp
-            keymap={keymap}
-            layout={layouts[selectedPhysicalLayoutIndex]}
-            behaviors={behaviors}
-            scale={keymapScale}
-            selectedLayerIndex={selectedLayerIndex}
-            selectedKeyPosition={selectedKeyPosition}
-            onKeyPositionClicked={setSelectedKeyPosition}
-          />
-          <select
-            className="absolute top-2 right-2 h-8 rounded px-2"
-            value={keymapScale}
-            onChange={(e) => {
-              const value = deserializeLayoutZoom(e.target.value);
-              setKeymapScale(value);
-            }}
-          >
-            <option value="auto">Auto</option>
-            <option value={0.25}>25%</option>
-            <option value={0.5}>50%</option>
-            <option value={0.75}>75%</option>
-            <option value={1}>100%</option>
-            <option value={1.25}>125%</option>
-            <option value={1.5}>150%</option>
-            <option value={2}>200%</option>
-          </select>
+      {layout && keymap && (
+        <div id="keyboard-preview" className="keyboard-preview">
+          {tool === "lighting" && (
+            <div className="lighting-side-toolbar" ref={setSideToolbar} />
+          )}
+          <div className="keyboard-stage">
+            <ExtraLedRail
+              flank="left"
+              lighting={lighting}
+              keyCount={layout.keys.length}
+              edit={extraEdit}
+            />
+            <div className="keyboard-canvas" ref={setCanvas}>
+              <KeymapComp
+                preview={lighting.preview}
+                catalog={catalog}
+                keymap={keymap}
+                layout={layout}
+                behaviors={behaviors}
+                scale={keymapScale}
+                selectedLayerIndex={selectedLayerIndex}
+                selectedKeyPosition={selectedKeyPosition}
+                marked={
+                  new Set(
+                    layer?.bindings.flatMap((binding, position) => {
+                      const original =
+                        originals[
+                          [
+                            selectedPhysicalLayoutIndex,
+                            layer.id,
+                            position,
+                          ].join("/")
+                        ];
+                      return original && !sameBinding(original, binding)
+                        ? [position]
+                        : [];
+                    }),
+                  )
+                }
+                targets={tool === "batch" ? targets : []}
+                onKeyPositionClicked={(position) => {
+                  if (!layer?.bindings[position]) return;
+                  if (tool === "batch")
+                    setTargets((current) =>
+                      current.includes(position)
+                        ? current.filter((p) => p !== position)
+                        : [...current, position],
+                    );
+                  else {
+                    setRotation(undefined);
+                    setSelectedKeyPosition(position);
+                  }
+                }}
+              />
+              <select
+                className="absolute top-2 right-2 h-8 rounded px-2"
+                aria-label="Keymap zoom"
+                value={keymapScale}
+                onChange={(e) => {
+                  const value = deserializeLayoutZoom(e.target.value);
+                  setKeymapScale(value);
+                }}
+              >
+                <option value="auto">Auto</option>
+                <option value={0.25}>25%</option>
+                <option value={0.5}>50%</option>
+                <option value={0.75}>75%</option>
+                <option value={1}>100%</option>
+                <option value={1.25}>125%</option>
+                <option value={1.5}>150%</option>
+                <option value={2}>200%</option>
+              </select>
+            </div>
+            <ExtraLedRail
+              flank="right"
+              lighting={lighting}
+              keyCount={layout.keys.length}
+              edit={extraEdit}
+            />
+          </div>
         </div>
       )}
-      {keymap && selectedBinding && (
-        <div className="p-2 col-start-2 row-start-2 bg-base-200">
-          <BehaviorBindingPicker
-            binding={selectedBinding}
-            behaviors={Object.values(behaviors)}
-            layers={keymap.layers.map(({ id, name }, li) => ({
-              id,
-              name: name || li.toLocaleString(),
-            }))}
-            onBindingChanged={doUpdateBinding}
-          />
+      {layer && <WorkbenchDivider />}
+      {keymap && layout && layer && (
+        <div className="workbench-controls">
+          <nav
+            aria-label="Keyboard tools"
+            className="panel-tabs workspace-tabs"
+          >
+            {(["edit", "lighting", "backup", "batch", "test"] as const).map(
+              (t, i) => (
+                <button
+                  key={t}
+                  aria-pressed={tool === t}
+                  onClick={() => setTool(t)}
+                >
+                  {
+                    [
+                      "Key actions",
+                      "Lighting",
+                      "Backup",
+                      "Batch edit",
+                      "Output test",
+                    ][i]
+                  }
+                </button>
+              ),
+            )}
+          </nav>
+          {pending && (
+            <div className="studio-error">
+              <strong>Interrupted edit</strong>
+              <p>
+                {pending
+                  .map(
+                    (c) =>
+                      `Layer ${c.layerId}, key ${c.position + 1}: ${positionState(keymap, c)}`,
+                  )
+                  .join(" · ")}
+              </p>
+              <button
+                className="studio-button"
+                disabled={pending.some(
+                  (c) => positionState(keymap, c) === "changed elsewhere",
+                )}
+                onClick={() => {
+                  if (
+                    failure?.cause instanceof BindingWriteError &&
+                    failure.cause.changes === pending
+                  )
+                    failure.retry();
+                  else applyChanges(pending);
+                }}
+              >
+                Resume edit
+              </button>
+              <button
+                className="studio-button"
+                onClick={() => {
+                  clearInterrupted(journalKey!);
+                  refreshJournal((n) => n + 1);
+                }}
+              >
+                Dismiss report
+              </button>
+            </div>
+          )}
+          {tool === "edit" && direction?.overridden && (
+            <button className="studio-button" onClick={() => changeEncoder()}>
+              Restore default direction
+            </button>
+          )}
+          {tool === "edit" && (
+            <BehaviorBindingPicker
+              catalog={catalog}
+              key={[
+                layer.id,
+                selectedKeyPosition,
+                rotation?.sensor,
+                rotation?.side,
+                selectedPhysicalLayoutIndex,
+              ].join("/")}
+              binding={
+                direction
+                  ? direction.binding ?? inherited
+                  : selectedBinding ?? undefined
+              }
+              behaviors={behaviorList}
+              layers={layerOptions}
+              onBindingChanged={direction ? changeEncoder : doUpdateBinding}
+            />
+          )}
+          {tool === "backup" &&
+            (device && Object.keys(behaviors).length ? (
+              <BackupPanel
+                context={{ device, layout, keymap, behaviors }}
+                apply={applyChanges}
+              />
+            ) : (
+              <p className="tool-panel">
+                Backup requires a device identifier and a loaded behavior list.
+              </p>
+            ))}
+          {tool === "lighting" && (
+            <LedCanvas.Provider
+              value={{
+                canvas,
+                sideToolbar,
+                setExtraEdit,
+                layout,
+                index: selectedPhysicalLayoutIndex,
+              }}
+            >
+              <LightingPanel
+                lighting={lighting}
+                support={lightingSupport}
+                device={device}
+                layers={layerOptions}
+              />
+            </LedCanvas.Provider>
+          )}
+          {tool === "test" && <OutputTest />}
+          {tool === "batch" && (
+            <section className="tool-panel">
+              <strong>Batch edit · {layer.name || layer.id}</strong>
+              <p>
+                Choose an operation, then select its target keys on the layout.
+              </p>
+              <div className="studio-tools">
+                <select
+                  aria-label="Batch operation"
+                  value={batchMode}
+                  onChange={(e) => setBatchMode(e.target.value)}
+                >
+                  <option value="copy">Copy a binding</option>
+                  <option value="transparent" disabled={!transparent}>
+                    Set transparent
+                  </option>
+                </select>
+                {batchMode === "copy" && (
+                  <label>
+                    Source key{" "}
+                    <select
+                      aria-label="Source key"
+                      value={selectedKeyPosition ?? ""}
+                      onChange={(e) =>
+                        setSelectedKeyPosition(Number(e.target.value))
+                      }
+                    >
+                      <option value="" disabled>
+                        Select a key
+                      </option>
+                      {layer.bindings.map((_, i) => (
+                        <option value={i} key={i}>
+                          {i + 1}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <button
+                  className="studio-button"
+                  disabled={
+                    !targets.length ||
+                    (batchMode === "copy" ? !selectedBinding : !transparent)
+                  }
+                  onClick={() => {
+                    const after =
+                      batchMode === "copy"
+                        ? selectedBinding
+                        : transparent && {
+                            behaviorId: transparent.id,
+                            param1: 0,
+                            param2: 0,
+                          };
+                    if (!after) return;
+                    applyChanges(
+                      targets
+                        .filter((p) => !sameBinding(layer.bindings[p], after))
+                        .map((position) => ({
+                          layerId: layer.id,
+                          position,
+                          before: layer.bindings[position],
+                          after,
+                        })),
+                    );
+                  }}
+                >
+                  Apply to {targets.length} keys
+                </button>
+                <button
+                  className="studio-button"
+                  onClick={() => setTargets([])}
+                >
+                  Clear selection
+                </button>
+              </div>
+            </section>
+          )}
         </div>
       )}
     </div>

@@ -5,8 +5,6 @@ import {
   MenuTrigger,
   Popover,
 } from "react-aria-components";
-import { useConnectedDeviceData } from "./rpc/useConnectedDeviceData";
-import { useSub } from "./usePubSub";
 import { useContext, useEffect, useState } from "react";
 import { useModalRef } from "./misc/useModalRef";
 import { LockStateContext } from "./rpc/LockStateContext";
@@ -18,6 +16,10 @@ import { GenericModal } from "./GenericModal";
 
 export interface AppHeaderProps {
   connectedDeviceLabel?: string;
+  busy?: boolean;
+  demo?: boolean;
+  saved?: boolean;
+  unsaved?: boolean;
   onSave?: () => void | Promise<void>;
   onDiscard?: () => void | Promise<void>;
   onUndo?: () => Promise<void>;
@@ -30,6 +32,10 @@ export interface AppHeaderProps {
 
 export const AppHeader = ({
   connectedDeviceLabel,
+  busy,
+  demo,
+  saved,
+  unsaved,
   canRedo,
   canUndo,
   onRedo,
@@ -52,20 +58,11 @@ export const AppHeader = ({
     ) {
       setShowSettingsReset(false);
     }
-  }, [lockState, showSettingsReset]);
+  }, [lockState, showSettingsReset, connectionState.conn]);
 
   const showSettingsRef = useModalRef(showSettingsReset);
-  const [unsaved, setUnsaved] = useConnectedDeviceData<boolean>(
-    { keymap: { checkUnsavedChanges: true } },
-    (r) => r.keymap?.checkUnsavedChanges
-  );
-
-  useSub("rpc_notification.keymap.unsavedChangesStatusChanged", (unsaved) =>
-    setUnsaved(unsaved)
-  );
-
   return (
-    <header className="top-0 left-0 right-0 grid grid-cols-[1fr_auto_1fr] items-center justify-between h-10 max-w-full">
+    <header className="top-0 left-0 right-0 grid grid-cols-[1fr_auto_1fr] items-center justify-between min-h-10 max-w-full studio-header">
       <div className="flex px-3 items-center gap-1">
         <img src="/zmk.svg" alt="ZMK Logo" className="h-8 rounded" />
         <p>Studio</p>
@@ -74,8 +71,7 @@ export const AppHeader = ({
         <h2 className="my-2 text-lg">Restore Stock Settings</h2>
         <div>
           <p>
-            Settings reset will remove any customizations previously made in ZMK
-            Studio and restore the stock keymap
+            This restores the stock keymap and removes your custom key bindings and layers.
           </p>
           <p>Continue?</p>
           <div className="flex justify-end my-2 gap-3">
@@ -100,7 +96,7 @@ export const AppHeader = ({
       <MenuTrigger>
         <Button
           className="text-center rac-disabled:opacity-0 hover:bg-base-300 transition-all duration-100 p-1 pl-2 rounded-lg"
-          isDisabled={!connectedDeviceLabel}
+          isDisabled={!connectedDeviceLabel || busy}
         >
           {connectedDeviceLabel}
           <ChevronDown className="inline-block w-4" />
@@ -122,10 +118,24 @@ export const AppHeader = ({
           </Menu>
         </Popover>
       </MenuTrigger>
-      <div className="flex justify-end gap-1 px-2">
+      <div className="header-actions flex justify-end items-center gap-1 px-2">
+        <span role="status" className="save-status">
+          {busy
+            ? "Working…"
+            : unsaved
+              ? "Active · unsaved"
+              : saved
+                ? demo
+                  ? "Saved in demo session"
+                  : "Saved to keyboard"
+                : unsaved === false
+                  ? "No pending changes"
+                  : ""}
+        </span>
         {onUndo && (
           <Tooltip label="Undo">
             <Button
+              aria-label="Undo"
               className="flex items-center justify-center p-1.5 rounded enabled:hover:bg-base-300 disabled:opacity-50"
               isDisabled={!canUndo}
               onPress={onUndo}
@@ -138,6 +148,7 @@ export const AppHeader = ({
         {onRedo && (
           <Tooltip label="Redo">
             <Button
+              aria-label="Redo"
               className="flex items-center justify-center p-1.5 rounded enabled:hover:bg-base-300 disabled:opacity-50"
               isDisabled={!canRedo}
               onPress={onRedo}
@@ -148,8 +159,9 @@ export const AppHeader = ({
         )}
         <Tooltip label="Save">
           <Button
+            aria-label="Save"
             className="flex items-center justify-center p-1.5 rounded enabled:hover:bg-base-300 disabled:opacity-50"
-            isDisabled={!unsaved}
+            isDisabled={!unsaved || busy}
             onPress={onSave}
           >
             <Save className="inline-block w-4 mx-1" aria-label="Save" />
@@ -157,9 +169,10 @@ export const AppHeader = ({
         </Tooltip>
         <Tooltip label="Discard">
           <Button
+            aria-label="Discard"
             className="flex items-center justify-center p-1.5 rounded enabled:hover:bg-base-300 disabled:opacity-50"
             onPress={onDiscard}
-            isDisabled={!unsaved}
+            isDisabled={!unsaved || busy}
           >
             <Trash2 className="inline-block w-4 mx-1" aria-label="Discard" />
           </Button>

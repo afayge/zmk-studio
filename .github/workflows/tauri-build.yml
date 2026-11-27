@@ -1,123 +1,94 @@
-name: "tauri-build"
+name: Desktop packages
 
 on:
   workflow_dispatch:
   push:
-  release:
-    types: [published]
+    tags: ['v*-afayge.*']
+
+permissions:
+  contents: read
 
 jobs:
-  publish-tauri:
-    permissions:
-      contents: write
+  package:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest"
-            name: macos
-            args: "--target universal-apple-darwin"
-          - platform: "ubuntu-24.04"
-            name: linux
-            args: ""
-          - platform: "ubuntu-24.04-arm"
-            name: linux-arm64
-            args: ""
-          - platform: "windows-latest"
-            name: windows
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
+          - os: macos-latest
+            platform: macOS-universal
+            args: --target universal-apple-darwin --bundles dmg
+          - os: windows-2022
+            platform: Windows-x64
+            args: --bundles nsis
+          - os: ubuntu-24.04
+            platform: Linux-x64
+            args: --bundles appimage,deb
+          - os: ubuntu-24.04-arm
+            platform: Linux-arm64
+            args: --bundles appimage,deb
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-24.04' || matrix.platform == 'ubuntu-24.04-arm' # This must match the platform value defined above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libappindicator3-dev librsvg2-dev libudev-dev patchelf \
-            libwebkit2gtk-4.1-0=2.44.0-2 \
-            libwebkit2gtk-4.1-dev=2.44.0-2 \
-            libjavascriptcoregtk-4.1-0=2.44.0-2 \
-            libjavascriptcoregtk-4.1-dev=2.44.0-2 \
-            gir1.2-javascriptcoregtk-4.1=2.44.0-2 \
-            gir1.2-webkit2-4.1=2.44.0-2
-
-      - name: Get release
-        id: get_release
-        if: github.event_name == 'release'
-        uses: bruceadams/get-release@v1.3.2
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev libdbus-1-dev libssl-dev patchelf file xdg-utils
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build installers
+        run: npm run tauri -- build ${{ matrix.args }} -- --locked
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: install dependencies (windows only)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          nuget.exe install Microsoft.Trusted.Signing.Client -Version 1.0.53 -x
-
-      - name: Set up Windows Kit into PATH (windows only)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          echo "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.26100.0\x64\" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: "npm" # Set this to npm, yarn or pnpm.
-
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
-        with:
-          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-
-      - name: install frontend dependencies
-        # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
-        run: npm ci
-
-      - uses: azure/login@v2
-        if: matrix.platform == 'windows-latest'
-        with:
-          enable-AzPSSession: true
-          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
-
-      - uses: tauri-apps/tauri-action@v0
-        name: build
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+      - name: Verify and collect native packages
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        with:
-          releaseId: ${{ steps.get_release.outputs.id }}
-          args: ${{ matrix.args }}
-
+          PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/verify-packages.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: zmk-studio-${{ matrix.name }}
-          path: |
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/*/release/bundle/**/*.dmg
-            src-tauri/target/*/release/bundle/**/*.app
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-  deploy-netlify:
-    if: github.event_name == 'release'
-    needs: publish-tauri
-    runs-on: ubuntu-latest
+          name: ${{ matrix.platform }}
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+
+  draft:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Deploy to Netlify
-        run: curl -X POST -d '{}' ${{ secrets.NETLIFY_DEPLOY_HOOK }}
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Upload packages and verify the draft downloads
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          test "$(find . -maxdepth 1 -name 'ZMK-Studio-*' -type f | wc -l)" -eq 6
+          sha256sum ZMK-Studio-* > SHA256SUMS.txt
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json isDraft -q .isDraft)" = true
+          else
+            gh release create "$TAG" --draft --verify-tag --title "ZMK Studio $TAG" --notes-file "../.github/release-notes/$TAG.md"
+          fi
+          gh release upload "$TAG" ZMK-Studio-* SHA256SUMS.txt --clobber
+          gh release download "$TAG" --dir "$RUNNER_TEMP/verify-assets"
+          cd "$RUNNER_TEMP/verify-assets"
+          cmp SHA256SUMS.txt "$GITHUB_WORKSPACE/release-assets/SHA256SUMS.txt"
+          sha256sum --strict -c SHA256SUMS.txt

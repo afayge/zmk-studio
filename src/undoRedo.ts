@@ -1,84 +1,77 @@
-import { createContext, useMemo, useState } from "react";
+import { createContext, useRef, useState } from "react";
 
 export type UndoCallback = () => Promise<void>;
-
 export type DoCallback = () => Promise<UndoCallback>;
 
-export function useUndoRedo(): [
-  (dc: DoCallback) => Promise<void>,
-  () => Promise<void>,
-  () => Promise<void>,
-  boolean,
-  boolean,
-  () => void
-] {
-  const [locked, setLocked] = useState<boolean>(false);
-  const [undoStack, setUndoStack] = useState<Array<[DoCallback, UndoCallback]>>(
-    []
+// Move an entry only after its device operation has been acknowledged.
+export function useUndoRedo() {
+  const undoStack = useRef<{ forward: DoCallback; reverse: UndoCallback }[]>(
+    [],
   );
-  const [redoStack, setRedoStack] = useState<Array<DoCallback>>([]);
+  const redoStack = useRef<DoCallback[]>([]);
+  const lock = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<{
+    cause: unknown;
+    message: string;
+    retry: () => void;
+  }>();
 
-  const canUndo = useMemo(
-    () => !locked && undoStack.length > 0,
-    [locked, undoStack]
-  );
-  const canRedo = useMemo(
-    () => !locked && redoStack.length > 0,
-    [locked, redoStack]
-  );
-
-  const doIt = async (doCb: DoCallback, preserveRedo?: boolean) => {
-    setLocked(true);
-    let undo = await doCb();
-
-    setUndoStack([[doCb, undo], ...undoStack]);
-    if (!preserveRedo) {
-      setRedoStack([]);
+  async function run(operation: () => Promise<void>) {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setFailure(undefined);
+    try {
+      await operation();
+    } catch (error) {
+      setFailure({
+        cause: error,
+        message: error instanceof Error ? error.message : String(error),
+        retry: () => void run(operation),
+      });
+    } finally {
+      lock.current = false;
+      setBusy(false);
     }
-    setLocked(false);
+  }
+
+  function doIt(forward: DoCallback) {
+    return run(async () => {
+      const reverse = await forward();
+      undoStack.current.push({ forward, reverse });
+      redoStack.current = [];
+    });
+  }
+
+  const undo = () =>
+    run(async () => {
+      const entry = undoStack.current[undoStack.current.length - 1];
+      if (!entry) return;
+      await entry.reverse();
+      undoStack.current.pop();
+      redoStack.current.push(entry.forward);
+    });
+
+  const redo = () =>
+    run(async () => {
+      const forward = redoStack.current[redoStack.current.length - 1];
+      if (!forward) return;
+      const reverse = await forward();
+      redoStack.current.pop();
+      undoStack.current.push({ forward, reverse });
+    });
+
+  return {
+    doIt,
+    undo,
+    redo,
+    run,
+    busy,
+    failure,
+    canUndo: !busy && !!undoStack.current.length,
+    canRedo: !busy && !!redoStack.current.length,
   };
-
-  const undo = async () => {
-    if (locked) {
-      throw new Error("undo invoked when existing operation in progress");
-    }
-
-    if (undoStack.length === 0) {
-      throw new Error("undo invoked with no operations to undo");
-    }
-
-    setLocked(true);
-    let [doCb, undoCb] = undoStack[0];
-    setUndoStack(undoStack.slice(1));
-    setRedoStack([doCb, ...redoStack]);
-
-    await undoCb();
-
-    setLocked(false);
-  };
-
-  const redo = async () => {
-    if (locked) {
-      throw new Error("redo invoked when existing operation in progress");
-    }
-
-    if (redoStack.length === 0) {
-      throw new Error("redo invoked with no operations to redo");
-    }
-
-    let doCb = redoStack[0];
-
-    setRedoStack(redoStack.slice(1));
-
-    return await doIt(doCb, true);
-  };
-
-  const reset = () => {
-    setRedoStack([]);
-    setUndoStack([]);
-  };
-
-  return [doIt, undo, redo, canUndo, canRedo, reset];
 }
 
 export const UndoRedoContext = createContext<

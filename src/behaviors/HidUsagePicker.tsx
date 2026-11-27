@@ -13,11 +13,9 @@ import {
   Popover,
   Section,
 } from "react-aria-components";
-import {
-  hid_usage_from_page_and_id,
-  hid_usage_page_get_ids,
-} from "../hid-usages";
-import { useCallback, useMemo } from "react";
+import { hid_usage_page_get_ids } from "../hid-usages";
+import { hexCode, keyIndex, keyName } from "./keyPress";
+import { useCallback, useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 export interface HidUsagePage {
@@ -33,22 +31,28 @@ export interface HidUsagePickerProps {
   onValueChanged: (value?: number) => void;
 }
 
-type UsageSectionProps = HidUsagePage;
+function inPageRange(page: HidUsagePage, usage: number) {
+  if (page.id === 7 && usage >= 0xe0 && usage <= 0xe7) return true;
+  return usage >= (page.min ?? 0) && usage <= (page.max ?? 0xffff);
+}
 
-const UsageSection = ({ id, min, max }: UsageSectionProps) => {
+const UsageSection = ({ id, min, max }: HidUsagePage) => {
   const info = useMemo(() => hid_usage_page_get_ids(id), [id]);
 
-  let usages = useMemo(() => {
-    let usages = info?.UsageIds || [];
-    if (max || min) {
-      usages = usages.filter(
-        (i) =>
-          (i.Id <= (max || Number.MAX_SAFE_INTEGER) && i.Id >= (min || 0)) ||
-          (id === 7 && i.Id >= 0xe0 && i.Id <= 0xe7)
-      );
+  const usages = useMemo(() => {
+    const options = new Map<number, string>();
+    for (const usage of info?.UsageIds ?? []) {
+      options.set((id << 16) | usage.Id, usage.Name);
     }
-
-    return usages;
+    for (const value of Object.keys(keyIndex).map(Number)) {
+      if (((value >>> 16) & 255) === id && !options.has(value))
+        options.set(value, keyName(value));
+    }
+    return [...options].flatMap(([code, name]) => {
+      const usage = code & 0xffff;
+      if (!inPageRange({ id, min, max }, usage)) return [];
+      return [{ code, name, aliases: keyIndex[code]?.[0] ?? "" }];
+    });
   }, [id, min, max, info]);
 
   return (
@@ -58,9 +62,10 @@ const UsageSection = ({ id, min, max }: UsageSectionProps) => {
         {(i) => (
           <ListBoxItem
             className="rac-hover:bg-base-300 pl-3 relative rac-focus:bg-base-300 cursor-default select-none rac-selected:before:content-['✔'] before:absolute before:left-[0] before:top-[0]"
-            id={hid_usage_from_page_and_id(id, i.Id)}
+            textValue={[i.name, i.aliases].filter(Boolean).join(" · ")}
+            id={i.code}
           >
-            {i.Name}
+            {i.name} {i.aliases.split(" ")[0]}
           </ListBoxItem>
         )}
       </Collection>
@@ -115,8 +120,26 @@ export const HidUsagePicker = ({
   usagePages,
   onValueChanged,
 }: HidUsagePickerProps) => {
+  const labelId = useId();
+  const [raw, setRaw] = useState(() => {
+    if (!value) return false;
+    const page = usagePages.find((p) => p.id === ((value >>> 16) & 255));
+    const usage = value & 0xffff;
+    if (!page || !inPageRange(page, usage)) return true;
+    return (
+      !keyIndex[value & 0xffffff] &&
+      !hid_usage_page_get_ids(page.id)?.UsageIds.some((u) => u.Id === usage)
+    );
+  });
+  const [rawText, setRawText] = useState<string>();
+  function inputRaw(text: string) {
+    setRawText(text);
+    const valid = /^(?:0x[0-9a-f]{1,8}|[0-9]{1,10})$/i.test(text.trim());
+    const n = Number(text.trim());
+    onValueChanged(valid && n <= 0xffffffff ? n : undefined);
+  }
   const mods = useMemo(() => {
-    let flags = value ? value >> 24 : 0;
+    const flags = value ? value >>> 24 : 0;
 
     return all_mods.filter((m) => m & flags).map((m) => m.toLocaleString());
   }, [value]);
@@ -125,13 +148,13 @@ export const HidUsagePicker = ({
     (e: Key | null) => {
       let value = typeof e == "number" ? e : undefined;
       if (value !== undefined) {
-        let mod_flags = mods_to_flags(mods.map((m) => parseInt(m)));
-        value = value | (mod_flags << 24);
+        const mod_flags = mods_to_flags(mods.map((m) => parseInt(m)));
+        value = (value | (mod_flags << 24)) >>> 0;
       }
 
       onValueChanged(value);
     },
-    [onValueChanged, mods]
+    [onValueChanged, mods],
   );
 
   const modifiersChanged = useCallback(
@@ -140,40 +163,67 @@ export const HidUsagePicker = ({
         return;
       }
 
-      let mod_flags = mods_to_flags(m.map((m) => parseInt(m)));
-      let new_value = mask_mods(value) | (mod_flags << 24);
-      onValueChanged(new_value);
+      const mod_flags = mods_to_flags(m.map((m) => parseInt(m)));
+      const new_value = mask_mods(value) | (mod_flags << 24);
+      setRawText(undefined);
+      onValueChanged(new_value >>> 0);
     },
-    [value]
+    [value, onValueChanged],
   );
 
   return (
-    <div className="flex gap-2 relative">
-      {label && <Label id="hid-usage-picker">{label}:</Label>}
-      <ComboBox
-        selectedKey={value ? mask_mods(value) : null}
-        onSelectionChange={selectionChanged}
-        aria-labelledby="hid-usage-picker"
-      >
-        <div className="flex">
-          <Input className="p-1 rounded-l" />
-          <Button className="rounded-r bg-primary text-primary-content w-8 h-8 flex justify-center items-center">
-            <ChevronDown className="size-4" />
-          </Button>
-        </div>
-        <Popover className="w-[var(--trigger-width)] max-h-4 shadow-md text-base-content rounded border-base-content bg-base-100">
-          <ListBox
-            items={usagePages}
-            className="block max-h-[30vh] min-h-[unset] overflow-auto p-2"
-            selectionMode="single"
-          >
-            {({ id, min, max }) => <UsageSection id={id} min={min} max={max} />}
-          </ListBox>
-        </Popover>
-      </ComboBox>
+    <div className="flex flex-wrap gap-2 relative">
+      {label && <Label id={labelId}>{label}:</Label>}
+      <label>
+        <input
+          type="checkbox"
+          checked={raw}
+          onChange={(e) => {
+            setRaw(e.target.checked);
+            setRawText(undefined);
+          }}
+        />{" "}
+        Encoded HID value
+      </label>
+      {raw ? (
+        <input
+          aria-label="HID code"
+          spellCheck={false}
+          value={rawText ?? (value ? hexCode(value) : "")}
+          placeholder="0x00070004"
+          onChange={(e) => inputRaw(e.target.value)}
+        />
+      ) : (
+        <ComboBox
+          selectedKey={
+            value ? (keyIndex[value] ? value : mask_mods(value)) : null
+          }
+          onSelectionChange={selectionChanged}
+          aria-label={label || "HID usage"}
+          aria-labelledby={label ? labelId : undefined}
+        >
+          <div className="flex">
+            <Input className="p-1 rounded-l" />
+            <Button className="rounded-r bg-primary text-primary-content w-8 h-8 flex justify-center items-center">
+              <ChevronDown className="size-4" />
+            </Button>
+          </div>
+          <Popover className="w-[var(--trigger-width)] max-h-4 shadow-md text-base-content rounded border-base-content bg-base-100">
+            <ListBox
+              items={usagePages}
+              className="block max-h-[30vh] min-h-[unset] overflow-auto p-2"
+              selectionMode="single"
+            >
+              {({ id, min, max }) => (
+                <UsageSection id={id} min={min} max={max} />
+              )}
+            </ListBox>
+          </Popover>
+        </ComboBox>
+      )}
       <CheckboxGroup
         aria-label="Implicit Modifiers"
-        className="grid grid-flow-col gap-x-px auto-cols-[minmax(min-content,1fr)] content-stretch divide-x rounded-md"
+        className="flex flex-wrap gap-px rounded-md"
         value={mods}
         onChange={modifiersChanged}
       >

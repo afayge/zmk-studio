@@ -1,14 +1,22 @@
 import { AppHeader } from "./AppHeader";
 
-import { create_rpc_connection } from "@zmkfirmware/zmk-studio-ts-client";
+import { createStudioConnection } from "./rpc/connection";
+import { LightingSupport } from "./rpc/generated/core";
 import { call_rpc } from "./rpc/logging";
 
 import type { Notification } from "@zmkfirmware/zmk-studio-ts-client/studio";
-import { ConnectionState, ConnectionContext } from "./rpc/ConnectionContext";
-import { Dispatch, useCallback, useEffect, useState } from "react";
-import { ConnectModal, TransportFactory } from "./ConnectModal";
+import { ConnectionContext } from "./rpc/ConnectionContext";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { RpcConnection } from "@zmkfirmware/zmk-studio-ts-client";
+import { SaveChangesErrorCode } from "@zmkfirmware/zmk-studio-ts-client/keymap";
+import { createDemoConnection } from "./rpc/demo";
+import { useConnectedDeviceData } from "./rpc/useConnectedDeviceData";
+import {
+  ConnectModal,
+  type TransportFactory,
+  type TransportKind,
+} from "./ConnectModal";
 
-import type { RpcTransport } from "@zmkfirmware/zmk-studio-ts-client/transport/index";
 import { connect as gatt_connect } from "@zmkfirmware/zmk-studio-ts-client/transport/gatt";
 import { connect as serial_connect } from "@zmkfirmware/zmk-studio-ts-client/transport/serial";
 import {
@@ -21,10 +29,11 @@ import {
 } from "./tauri/serial";
 import Keyboard from "./keyboard/Keyboard";
 import { UndoRedoContext, useUndoRedo } from "./undoRedo";
-import { usePub, useSub } from "./usePubSub";
+import { publish, useSub } from "./usePubSub";
 import { LockState } from "@zmkfirmware/zmk-studio-ts-client/core";
 import { LockStateContext } from "./rpc/LockStateContext";
 import { UnlockModal } from "./UnlockModal";
+import { UserCancelledError } from "@zmkfirmware/zmk-studio-ts-client/transport/errors";
 import { valueAfter } from "./misc/async";
 import { AppFooter } from "./AppFooter";
 import { AboutModal } from "./AboutModal";
@@ -36,51 +45,40 @@ declare global {
   }
 }
 
-const TRANSPORTS: TransportFactory[] = [
-  navigator.serial && { label: "USB", connect: serial_connect },
-  ...(navigator.bluetooth && navigator.userAgent.indexOf("Linux") >= 0
-    ? [{ label: "BLE", connect: gatt_connect }]
-    : []),
-  ...(window.__TAURI_INTERNALS__
-    ? [
-        {
-          label: "BLE",
-          isWireless: true,
-          pick_and_connect: {
-            connect: tauri_ble_connect,
-            list: ble_list_devices,
-          },
-        },
-      ]
-    : []),
-  ...(window.__TAURI_INTERNALS__
-    ? [
-        {
-          label: "USB",
-          pick_and_connect: {
-            connect: tauri_serial_connect,
-            list: serial_list_devices,
-          },
-        },
-      ]
-    : []),
-].filter((t) => t !== undefined);
+const TRANSPORTS: TransportFactory[] = [];
+if (window.__TAURI_INTERNALS__) {
+  TRANSPORTS.push(
+    {
+      label: "BLE",
+      pick_and_connect: { connect: tauri_ble_connect, list: ble_list_devices },
+    },
+    {
+      label: "USB",
+      pick_and_connect: {
+        connect: tauri_serial_connect,
+        list: serial_list_devices,
+      },
+    },
+  );
+} else {
+  if (navigator.serial)
+    TRANSPORTS.push({ label: "USB", connect: serial_connect });
+  if (navigator.bluetooth && navigator.userAgent.includes("Linux"))
+    TRANSPORTS.push({ label: "BLE", connect: gatt_connect });
+}
 
 async function listen_for_notifications(
   notification_stream: ReadableStream<Notification>,
-  signal: AbortSignal
+  signal: AbortSignal,
 ): Promise<void> {
-  let reader = notification_stream.getReader();
+  const reader = notification_stream.getReader();
   const onAbort = () => {
-    reader.cancel();
-    reader.releaseLock();
+    void reader.cancel();
   };
   signal.addEventListener("abort", onAbort, { once: true });
-  do {
-    let pub = usePub();
-
-    try {
-      let { done, value } = await reader.read();
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
       if (done) {
         break;
       }
@@ -90,17 +88,15 @@ async function listen_for_notifications(
       }
 
       console.log("Notification", value);
-      pub("rpc_notification", value);
+      publish("rpc_notification", value);
 
-      const subsystem = Object.entries(value).find(
-        ([_k, v]) => v !== undefined
-      );
+      const subsystem = Object.entries(value).find(([, v]) => v !== undefined);
       if (!subsystem) {
         continue;
       }
 
       const [subId, subData] = subsystem;
-      const event = Object.entries(subData).find(([_k, v]) => v !== undefined);
+      const event = Object.entries(subData).find(([, v]) => v !== undefined);
 
       if (!event) {
         continue;
@@ -109,213 +105,264 @@ async function listen_for_notifications(
       const [eventName, eventData] = event;
       const topic = ["rpc_notification", subId, eventName].join(".");
 
-      pub(topic, eventData);
-    } catch (e) {
-      signal.removeEventListener("abort", onAbort);
-      reader.releaseLock();
-      throw e;
+      publish(topic, eventData);
     }
-  } while (true);
-
-  signal.removeEventListener("abort", onAbort);
-  reader.releaseLock();
-  notification_stream.cancel();
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
 }
 
-async function connect(
-  transport: RpcTransport,
-  setConn: Dispatch<ConnectionState>,
-  setConnectedDeviceName: Dispatch<string | undefined>,
-  signal: AbortSignal
-) {
-  let conn = await create_rpc_connection(transport, { signal });
-
-  let details = await Promise.race([
-    call_rpc(conn, { core: { getDeviceInfo: true } })
-      .then((r) => r?.core?.getDeviceInfo)
-      .catch((e) => {
-        console.error("Failed first RPC call", e);
-        return undefined;
-      }),
-    valueAfter(undefined, 1000),
-  ]);
-
-  if (!details) {
-    // TODO: Show a proper toast/alert not using `window.alert`
-    window.alert("Failed to connect to the chosen device");
-    return;
-  }
-
-  listen_for_notifications(conn.notification_readable, signal)
-    .then(() => {
-      setConnectedDeviceName(undefined);
-      setConn({ conn: null });
-    })
-    .catch((_e) => {
-      setConnectedDeviceName(undefined);
-      setConn({ conn: null });
-    });
-
-  setConnectedDeviceName(details.name);
-  setConn({ conn });
+interface DeviceSession {
+  conn: RpcConnection;
+  name: string;
+  identity?: string;
+  demo: boolean;
+  lightingSupport: LightingSupport;
+  abort: AbortController;
 }
 
 function App() {
-  const [conn, setConn] = useState<ConnectionState>({ conn: null });
-  const [connectedDeviceName, setConnectedDeviceName] = useState<
-    string | undefined
-  >(undefined);
-  const [doIt, undo, redo, canUndo, canRedo, reset] = useUndoRedo();
+  const [session, setSession] = useState<DeviceSession>();
+  const [connectionError, setConnectionError] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const pending = useRef(false);
+  async function attach(
+    kind: TransportKind | "Demo",
+    openConnection: (
+      signal: AbortSignal,
+    ) => RpcConnection | Promise<RpcConnection>,
+  ) {
+    if (pending.current) return;
+    pending.current = true;
+    const abort = new AbortController();
+    setConnecting(true);
+    setConnectionError("");
+    try {
+      const conn = await openConnection(abort.signal);
+      const result = await Promise.race([
+        call_rpc(conn, { core: { getDeviceInfo: true } }),
+        valueAfter(undefined, 1500),
+      ]);
+      if (kind === "USB" && result === undefined)
+        throw Error(
+          "串口已打开，键盘未回复。若同时连接了蓝牙，请用键盘的 OUT_USB 键切换到 USB 输出，再重试。",
+        );
+      const info = result?.core?.getDeviceInfo;
+      if (!info)
+        throw Error(
+          "Could not read keyboard information. Reconnect and try again.",
+        );
+      const serial = Array.from(info.serialNumber).join(".");
+      const demo = kind === "Demo";
+      const identity = demo
+        ? "studio-demo"
+        : serial
+          ? JSON.stringify([info.name, serial])
+          : undefined;
+      setSession({
+        conn,
+        abort,
+        name: info.name,
+        identity,
+        demo,
+        lightingSupport: info.lightingSupport,
+      });
+      void listen_for_notifications(conn.notification_readable, abort.signal)
+        .catch(() => undefined)
+        .finally(() =>
+          setSession((current) =>
+            current?.conn === conn ? undefined : current,
+          ),
+        );
+    } catch (error) {
+      abort.abort();
+      if (
+        !(error instanceof UserCancelledError) &&
+        !(error instanceof DOMException && error.name === "NotFoundError")
+      )
+        setConnectionError(
+          error instanceof Error ? error.message : String(error),
+        );
+    } finally {
+      pending.current = false;
+      setConnecting(false);
+    }
+  }
+  const [revision, setRevision] = useState(0);
+  const connection = useMemo(
+    () => ({ conn: session?.conn || null }),
+    [session],
+  );
+  return (
+    <ConnectionContext.Provider value={connection}>
+      <ConnectModal
+        open={!session}
+        transports={TRANSPORTS}
+        busy={connecting}
+        error={connectionError}
+        onConnect={(kind, open) =>
+          void attach(kind, async (signal) =>
+            createStudioConnection(await open(), signal),
+          )
+        }
+        onDemo={() => void attach("Demo", createDemoConnection)}
+      />
+      {session && (
+        <Session
+          key={session.conn.label + revision}
+          session={session}
+          reload={() => setRevision((n) => n + 1)}
+        />
+      )}
+    </ConnectionContext.Provider>
+  );
+}
+
+function Session({
+  session,
+  reload,
+}: {
+  session: DeviceSession;
+  reload: () => void;
+}) {
+  const [lockState, setLockState] = useState(
+    LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED,
+  );
+  useSub("rpc_notification.core.lockStateChanged", setLockState);
+  useEffect(() => {
+    let ignore = false;
+    void call_rpc(session.conn, { core: { getLockState: true } })
+      .then((r) => {
+        if (!ignore && r.core?.getLockState !== undefined)
+          setLockState(r.core.getLockState);
+      })
+      .catch(() => {});
+    return () => {
+      ignore = true;
+    };
+  }, [session]);
+  return (
+    <LockStateContext.Provider value={lockState}>
+      <UnlockModal />
+      <Editor key={lockState} session={session} reload={reload} />
+    </LockStateContext.Provider>
+  );
+}
+
+const saveErrors: Partial<Record<SaveChangesErrorCode, string>> = {
+  [SaveChangesErrorCode.SAVE_CHANGES_ERR_NO_SPACE]: "Keyboard storage is full.",
+  [SaveChangesErrorCode.SAVE_CHANGES_ERR_NOT_SUPPORTED]:
+    "This firmware does not support saving changes.",
+};
+
+function Editor({
+  session,
+  reload,
+}: {
+  session: DeviceSession;
+  reload: () => void;
+}) {
+  const history = useUndoRedo();
   const [showAbout, setShowAbout] = useState(false);
   const [showLicenseNotice, setShowLicenseNotice] = useState(false);
-  const [connectionAbort, setConnectionAbort] = useState(new AbortController());
-
-  const [lockState, setLockState] = useState<LockState>(
-    LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED
+  const [savedRevision, setSavedRevision] = useState(0);
+  const [unsaved, setUnsaved] = useConnectedDeviceData<boolean>(
+    { keymap: { checkUnsavedChanges: true } },
+    (r) => r.keymap?.checkUnsavedChanges,
+    true,
   );
-
-  useSub("rpc_notification.core.lockStateChanged", (ls) => {
-    setLockState(ls);
-  });
-
-  useEffect(() => {
-    if (!conn) {
-      reset();
-      setLockState(LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED);
-    }
-
-    async function updateLockState() {
-      if (!conn.conn) {
-        return;
-      }
-
-      let locked_resp = await call_rpc(conn.conn, {
-        core: { getLockState: true },
-      });
-
-      setLockState(
-        locked_resp.core?.getLockState ||
-          LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED
-      );
-    }
-
-    updateLockState();
-  }, [conn, setLockState]);
-
-  const save = useCallback(() => {
-    async function doSave() {
-      if (!conn.conn) {
-        return;
-      }
-
-      let resp = await call_rpc(conn.conn, { keymap: { saveChanges: true } });
-      if (!resp.keymap?.saveChanges || resp.keymap?.saveChanges.err) {
-        console.error("Failed to save changes", resp.keymap?.saveChanges);
-      }
-    }
-
-    doSave();
-  }, [conn]);
-
-  const discard = useCallback(() => {
-    async function doDiscard() {
-      if (!conn.conn) {
-        return;
-      }
-
-      let resp = await call_rpc(conn.conn, {
-        keymap: { discardChanges: true },
-      });
-      if (!resp.keymap?.discardChanges) {
-        console.error("Failed to discard changes", resp);
-      }
-
-      reset();
-      setConn({ conn: conn.conn });
-    }
-
-    doDiscard();
-  }, [conn]);
-
-  const resetSettings = useCallback(() => {
-    async function doReset() {
-      if (!conn.conn) {
-        return;
-      }
-
-      let resp = await call_rpc(conn.conn, {
-        core: { resetSettings: true },
-      });
-      if (!resp.core?.resetSettings) {
-        console.error("Failed to settings reset", resp);
-      }
-
-      reset();
-      setConn({ conn: conn.conn });
-    }
-
-    doReset();
-  }, [conn]);
-
-  const disconnect = useCallback(() => {
-    async function doDisconnect() {
-      if (!conn.conn) {
-        return;
-      }
-
-      await conn.conn.request_writable.close();
-      connectionAbort.abort("User disconnected");
-      setConnectionAbort(new AbortController());
-    }
-
-    doDisconnect();
-  }, [conn]);
-
-  const onConnect = useCallback(
-    (t: RpcTransport) => {
-      const ac = new AbortController();
-      setConnectionAbort(ac);
-      connect(t, setConn, setConnectedDeviceName, ac.signal);
-    },
-    [setConn, setConnectedDeviceName, setConnectedDeviceName]
-  );
-
+  useSub("rpc_notification.keymap.unsavedChangesStatusChanged", setUnsaved);
+  const save = () =>
+    history.run(async () => {
+      const result = (
+        await call_rpc(session.conn, { keymap: { saveChanges: true } })
+      ).keymap?.saveChanges;
+      if (!result?.ok)
+        throw Error(
+          "Save failed · " +
+            (result?.err !== undefined
+              ? saveErrors[result.err] ||
+                "The keyboard could not store the changes."
+              : "no acknowledgement"),
+        );
+      setUnsaved(false);
+      setSavedRevision((n) => n + 1);
+    });
+  const discard = () =>
+    history.run(async () => {
+      if (
+        !(await call_rpc(session.conn, { keymap: { discardChanges: true } }))
+          .keymap?.discardChanges
+      )
+        throw Error("The keyboard could not discard changes.");
+      reload();
+    });
+  const reset = () =>
+    history.run(async () => {
+      if (
+        !(await call_rpc(session.conn, { core: { resetSettings: true } })).core
+          ?.resetSettings
+      )
+        throw Error("The keyboard could not restore stock settings.");
+      reload();
+    });
+  const disconnect = () =>
+    history.run(async () => {
+      await session.conn.request_writable.close();
+      session.abort.abort();
+    });
   return (
-    <ConnectionContext.Provider value={conn}>
-      <LockStateContext.Provider value={lockState}>
-        <UndoRedoContext.Provider value={doIt}>
-          <UnlockModal />
-          <ConnectModal
-            open={!conn.conn}
-            transports={TRANSPORTS}
-            onTransportCreated={onConnect}
-          />
-          <AboutModal open={showAbout} onClose={() => setShowAbout(false)} />
-          <LicenseNoticeModal
-            open={showLicenseNotice}
-            onClose={() => setShowLicenseNotice(false)}
-          />
-          <div className="bg-base-100 text-base-content h-full max-h-[100vh] w-full max-w-[100vw] inline-grid grid-cols-[auto] grid-rows-[auto_1fr_auto] overflow-hidden">
-            <AppHeader
-              connectedDeviceLabel={connectedDeviceName}
-              canUndo={canUndo}
-              canRedo={canRedo}
-              onUndo={undo}
-              onRedo={redo}
-              onSave={save}
-              onDiscard={discard}
-              onDisconnect={disconnect}
-              onResetSettings={resetSettings}
-            />
-            <Keyboard />
-            <AppFooter
-              onShowAbout={() => setShowAbout(true)}
-              onShowLicenseNotice={() => setShowLicenseNotice(true)}
-            />
+    <UndoRedoContext.Provider value={history.doIt}>
+      <AboutModal open={showAbout} onClose={() => setShowAbout(false)} />
+      <LicenseNoticeModal
+        open={showLicenseNotice}
+        onClose={() => setShowLicenseNotice(false)}
+      />
+      <main className="studio-shell bg-base-100 text-base-content">
+        <AppHeader
+          connectedDeviceLabel={session.name}
+          canUndo={history.canUndo}
+          canRedo={history.canRedo}
+          onUndo={history.undo}
+          onRedo={history.redo}
+          onSave={save}
+          onDiscard={discard}
+          onDisconnect={disconnect}
+          onResetSettings={reset}
+          busy={history.busy}
+          unsaved={unsaved}
+          demo={session.demo}
+          saved={savedRevision > 0}
+        />
+        {history.failure && (
+          <div role="alert" className="studio-error">
+            {history.failure.message}{" "}
+            <button className="studio-button" onClick={history.failure.retry}>
+              Retry
+            </button>
           </div>
-        </UndoRedoContext.Provider>
-      </LockStateContext.Provider>
-    </ConnectionContext.Provider>
+        )}
+        <fieldset
+          disabled={history.busy}
+          className="studio-workspace"
+          ref={(el) => {
+            if (el) el.inert = history.busy;
+          }}
+        >
+          <Keyboard
+            device={session.identity}
+            lightingSupport={session.lightingSupport}
+            savedRevision={savedRevision}
+            failure={history.failure}
+          />
+        </fieldset>
+        <AppFooter
+          onShowAbout={() => setShowAbout(true)}
+          onShowLicenseNotice={() => setShowLicenseNotice(true)}
+        />
+      </main>
+    </UndoRedoContext.Provider>
   );
 }
 

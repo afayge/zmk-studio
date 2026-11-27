@@ -1,4 +1,4 @@
-import { BehaviorBindingParametersSet } from "@zmkfirmware/zmk-studio-ts-client/behaviors";
+import { BehaviorBindingParametersSet } from "../rpc/generated/behaviors";
 import { ParameterValuePicker } from "./ParameterValuePicker";
 import { validateValue } from "./parameters";
 
@@ -30,13 +30,14 @@ export const BehaviorParametersPicker = ({
       </div>
     );
   } else {
-    const set = metadata.find((s) =>
+    const matching = metadata.filter((s) =>
       validateValue(
         layers.map((l) => l.id),
         param1,
-        s.param1
-      )
+        s.param1,
+      ),
     );
+    const second = matching.flatMap((s) => s.param2);
     return (
       <>
         <ParameterValuePicker
@@ -45,9 +46,10 @@ export const BehaviorParametersPicker = ({
           layers={layers}
           onValueChanged={onParam1Changed}
         />
-        {(set?.param2?.length || 0) > 0 && (
+        {second.length > 0 && (
           <ParameterValuePicker
-            values={set!.param2}
+            key={second.map((v) => v.name + Object.keys(v).join()).join("/")}
+            values={second}
             value={param2}
             layers={layers}
             onValueChanged={onParam2Changed}

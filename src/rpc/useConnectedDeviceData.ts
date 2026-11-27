@@ -41,7 +41,7 @@ export function useConnectedDeviceData<T>(
       }
 
       let ignore = false;
-      startRequest();
+      void startRequest().catch(() => { if (!ignore) setData(undefined); });
 
       return () => {
         ignore = true;

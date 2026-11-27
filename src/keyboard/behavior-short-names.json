@@ -1,4 +1,5 @@
 {
+    "LED Matrix": {"short": "LM"},
     "Key Press": {"short": ""},
     "Bootloader": {"short": "Bootloadr"},
     "External Power": {"short": "Ext Pwr"},

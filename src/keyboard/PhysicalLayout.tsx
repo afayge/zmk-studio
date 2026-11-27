@@ -1,3 +1,5 @@
+import { useKeyLights } from "./useKeyLights";
+import type { MatrixPreview, PreviewGrid } from "./matrixPreview";
 import {
   CSSProperties,
   PropsWithChildren,
@@ -10,6 +12,11 @@ import { Key } from "./Key";
 export type KeyPosition = PropsWithChildren<{
   id: string;
   header?: string;
+  description?: string;
+  tooltip?: string;
+  modified?: boolean;
+  target?: boolean;
+  disabled?: boolean;
   width: number;
   height: number;
   x: number;
@@ -30,6 +37,8 @@ export function deserializeLayoutZoom(value: string): LayoutZoom {
 
 interface PhysicalLayoutProps {
   positions: Array<KeyPosition>;
+  preview?: MatrixPreview;
+  grid?: PreviewGrid;
   selectedPosition?: number;
   oneU?: number;
   hoverZoom?: boolean;
@@ -49,8 +58,8 @@ function scalePosition(
   { x, y, r, rx, ry }: PhysicalLayoutPositionLocation,
   oneU: number,
 ): CSSProperties {
-  let left = x * oneU;
-  let top = y * oneU;
+  const left = x * oneU;
+  const top = y * oneU;
   let transformOrigin = undefined;
   let transform = undefined;
   const transformStyle = "preserve-3d";
@@ -59,8 +68,8 @@ function scalePosition(
     // Use `??` so an explicit rotation origin of 0 is honored; `rx || x`
     // collapsed a legitimate 0 back to the key's own position, pivoting the
     // key around its own corner instead of the layout origin (#97).
-    let transformX = ((rx ?? x) - x) * oneU;
-    let transformY = ((ry ?? y) - y) * oneU;
+    const transformX = ((rx ?? x) - x) * oneU;
+    const transformY = ((ry ?? y) - y) * oneU;
     transformOrigin = `${transformX}px ${transformY}px`;
     transform = `rotate(${r}deg)`;
   }
@@ -76,12 +85,15 @@ function scalePosition(
 
 export const PhysicalLayout = ({
   positions,
+  preview,
+  grid,
   selectedPosition,
   oneU = 48,
   onPositionClicked,
-  ...props
+  zoom,
 }: PhysicalLayoutProps) => {
   const ref = useRef<HTMLDivElement>(null);
+  const pressKey = useKeyLights(ref, grid, preview, positions[0]?.id);
   const [scale, setScale] = useState(1);
 
   useLayoutEffect(() => {
@@ -92,7 +104,7 @@ export const PhysicalLayout = ({
     if (!parent) return;
 
     const calculateScale = () => {
-      if (props.zoom === "auto") {
+      if (zoom === "auto") {
         const padding = Math.min(window.innerWidth, window.innerHeight) * 0.05; // Padding when in auto mode
         const newScale = Math.min(
           parent.clientWidth / (element.clientWidth + 2 * padding),
@@ -100,7 +112,7 @@ export const PhysicalLayout = ({
         );
         setScale(newScale);
       } else {
-        setScale(props.zoom || 1);
+        setScale(zoom || 1);
       }
     };
 
@@ -116,28 +128,30 @@ export const PhysicalLayout = ({
     return () => {
       resizeObserver.disconnect();
     };
-  }, [props.zoom]);
+  }, [zoom]);
 
   // TODO: Add a bit of padding for rotation when supported
-  let rightMost = positions
+  const rightMost = positions
     .map((k) => k.x + k.width)
     .reduce((a, b) => Math.max(a, b), 0);
-  let bottomMost = positions
+  const bottomMost = positions
     .map((k) => k.y + k.height)
     .reduce((a, b) => Math.max(a, b), 0);
 
   const positionItems = positions.map((p, idx) => (
-    <div className="absolute hover:z-10" style={scalePosition(p, oneU)}>
-      <div
-        key={p.id}
+    <div
+      key={p.id}
+      className="absolute hover:z-10"
+      style={scalePosition(p, oneU)}
+    >
+      <Key
         onClick={() => onPositionClicked?.(idx)}
-      >
-        <Key
-          oneU={oneU}
-          selected={idx === selectedPosition}
-          {...p}
-        />
-      </div>
+        onPressChange={preview ? (down) => pressKey(idx, down) : undefined}
+        position={idx}
+        oneU={oneU}
+        selected={idx === selectedPosition}
+        {...p}
+      />
     </div>
   ));
 
@@ -151,7 +165,6 @@ export const PhysicalLayout = ({
         transformStyle: "preserve-3d",
       }}
       ref={ref}
-      {...props}
     >
       {positionItems}
     </div>

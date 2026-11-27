@@ -3,7 +3,7 @@ import { useEffect } from "react";
 
 const emitter = new Emittery();
 
-export const usePub = () => (name: PropertyKey, data: any) =>
+export const publish = (name: PropertyKey, data: any) =>
   emitter.emit(name, data);
 
 export const useSub = (
