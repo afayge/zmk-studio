@@ -168,12 +168,13 @@ export const LayerPicker = ({
 
   return (
     <div className="flex flex-col min-w-40">
-      <div className="grid grid-cols-[1fr_auto_auto] items-center">
+      <div className="layer-picker-grid border-r border-transparent">
         <Label className="after:content-[':'] text-sm">Layers</Label>
         {onRemoveClicked && (
           <button
             type="button"
-            className="hover:text-primary-content hover:bg-primary rounded-sm"
+            aria-label="Remove layer"
+            className="col-start-2 justify-self-center hover:text-primary-content hover:bg-primary rounded-sm"
             disabled={!canRemove}
             onClick={onRemoveClicked}
           >
@@ -184,7 +185,8 @@ export const LayerPicker = ({
           <button
             type="button"
             disabled={!canAdd}
-            className="hover:text-primary-content ml-1 hover:bg-primary rounded-sm disabled:text-gray-500 disabled:hover:bg-base-300 disabled:cursor-not-allowed"
+            aria-label="Add layer"
+            className="col-start-3 justify-self-center hover:text-primary-content hover:bg-primary rounded-sm disabled:text-gray-500 disabled:hover:bg-base-300 disabled:cursor-not-allowed"
             onClick={onAddClicked}
           >
             <Plus className="size-4" />
@@ -217,20 +219,20 @@ export const LayerPicker = ({
         {(layer_item) => (
           <ListBoxItem
             textValue={`${layer_item.label} ${layer_item.index}`}
-            className="p-1 b-1 my-1 group grid grid-cols-[1fr_auto] items-center aria-selected:bg-primary aria-selected:text-primary-content border rounded border-transparent border-solid hover:bg-base-300"
+            className="layer-picker-grid py-1 pl-1 my-1 group aria-selected:bg-primary aria-selected:text-primary-content border rounded border-transparent border-solid hover:bg-base-300"
           >
-            <span className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate">{layer_item.label}</span>
-              <span className="inline-flex h-[1.125rem] min-w-[1.125rem] shrink-0 items-center justify-center rounded-[4px] border border-b-2 border-solid border-current px-1 font-[ui-monospace,monospace] text-[11px] font-semibold leading-none tabular-nums">
-                {layer_item.index}
-              </span>
+            <span className="truncate [contain:inline-size]" title={layer_item.label}>
+              {layer_item.label}
             </span>
             <Pencil
-              className="h-4 w-4 mx-1 invisible group-hover:visible"
+              className="size-4 justify-self-center invisible group-hover:visible"
               onClick={() =>
                 setEditLabelData({ id: layer_item.id, name: layer_item.name })
               }
             />
+            <span className="inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center justify-self-center rounded-[4px] border border-b-2 border-solid border-current px-1 font-[ui-monospace,monospace] text-[11px] font-semibold leading-none tabular-nums">
+              {layer_item.index}
+            </span>
           </ListBoxItem>
         )}
       </ListBox>

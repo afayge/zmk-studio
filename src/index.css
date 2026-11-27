@@ -76,6 +76,11 @@ body {
   grid-row: 1;
   overflow: auto;
 }
+.layer-picker-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1.25rem 1.75rem;
+  align-items: center;
+}
 .keyboard-canvas {
   position: relative;
   display: grid;
