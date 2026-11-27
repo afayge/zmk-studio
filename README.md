@@ -4,7 +4,7 @@
 
 ## 下载与安装
 
-应用版本为 **0.4.0**，本次定制版标签为 **v0.4.0-afayge.1**。[发布说明与 SHA-256 校验文件](https://github.com/afayge/zmk-studio/releases/tag/v0.4.0-afayge.1)
+应用版本为 **0.4.0**，本次定制版标签为 **v0.4.0-afayge.1**。[发布说明](https://github.com/afayge/zmk-studio/releases/tag/v0.4.0-afayge.1) · [下载 SHA256SUMS.txt](https://github.com/afayge/zmk-studio/releases/download/v0.4.0-afayge.1/SHA256SUMS.txt)
 
 | 系统 | 安装包 | 安装方法 |
 | --- | --- | --- |
